@@ -1,0 +1,5 @@
+input/*
+output_hl7/*
+__pycache__
+logs/*
+*.pyc

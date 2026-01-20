@@ -1,0 +1,6 @@
+internal_patient_number,assigning_authority,hospital_case_number,nhs_number,nhs_verification_status,surname,forename,date_of_birth,sex,patient_title,address_line_1,address_line_2,address_line_3,address_line_4,address_line_5,postcode,death_indicator,date_of_death,registered_gp_code,ethnic_code,home_phone,work_phone,mobile_phone,registered_gp,registered_practice
+4.30392E+11,RX1,HOS383285501,4505015287,02,,Liam,20000615,2,Mrs,456 High St,Apt 4B,Floor 2,Manchester,UK,M13BB,Y,20230101,GP2989,D4,74114919959,49051814504,7774862661,Dr. Green,North Manchester Medical
+1.28643E+11,RX1,HOS991346705,5617038959,03,,Alex,20181201,2,Prof,123 Main St,Apt 4B,,Manchester,UK,SW1A1AA,N,,GP5954,D4,99529872961,45432358269,7966612471,Dr. Black,North Manchester Medical
+3.19051E+11,RX1,HOS649513501,6916820560,03,O'Connor,Jane,18000101,1,Miss,123 Main St,,Floor 2,Edinburgh,UK,EH99 1SP,,,GP3966,D4,53392564983,,7164230239,Dr. White,North Manchester Medical
+3.78988E+11,RX1,HOS366609922,1787578015,02,Doe,John,20181201,1,Dr,1011 Oak Ave,Suite 12,,Edinburgh,UK,SW1A1AA,Y,20201010,GP5608,B2,42094618929,,7338897349,Dr. White,South Health Centre
+2.13678E+11,RX1,HOS312697423,1114015179,03,Doe,Alex,19120101,2,Mrs,1011 Oak Ave,Suite 12,Floor 2,Birmingham,UK,SW1A1AA,N,,GP3771,C3,11067776163,,7598645632,Dr. Black,South Health Centre

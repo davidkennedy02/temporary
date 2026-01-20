@@ -1,0 +1,39 @@
+{
+  "directories": {
+    "input_folder": "input",
+    "output_folder": "output_hl7"
+  },
+  "hl7_settings": {
+    "sending_application": "PMI",
+    "sending_facility": "RCH",
+    "receiving_application": "ULTRA",
+    "receiving_facility": "RCH",
+    "default_event_type": "A31",
+    "hl7_version": "2.4",
+    "processing_id": "T",
+    "accept_acknowledgment_type": "AL",
+    "application_acknowledgment_type": "NE"
+  },
+  "patient_settings": {
+    "assigning_authority": "RCH"
+  },
+  "pv1_settings": {
+    "patient_class": "O",
+    "patient_type": "O",
+    "visit_institution": "MAIN_HOSPITAL",
+    "attending_doctor_id": "ACON",
+    "attending_doctor_name": "ANAESTHETICS CONS",
+    "attending_doctor_type": "L",
+    "referring_doctor_name": "ANAESTHETICS CONS",
+    "referring_doctor_id": "AUSHICPR"
+  },
+  "processing": {
+    "batch_size": 1000,
+    "max_workers": null,
+    "max_retries": 3
+  },
+  "logging": {
+    "log_directory": "logs",
+    "log_level": "INFO"
+  }
+}
