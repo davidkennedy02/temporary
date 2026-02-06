@@ -371,15 +371,15 @@ def create_adt_message_fast(patient_info: patientinfo.Patient, event_type="A28")
     
     def _build_pid() -> str:
         """Builds the PID (Patient Identification) segment."""
-        # 1. Identifiers - PID.3 needs repetition: InternalID^^^ASS_AUTH^HOSP~NHSNumber^Y^^NHS^NHSNO
+        # 1. Identifiers - PID.3 needs repetition: InternalID^^^HOSP^ASS_AUTH~NHSNumber^Y^^NHSNO^NHS
         hosp_case = sanitize_hl7_field(patient_info.hospital_case_number)
         assign_auth = sanitize_hl7_field(patient_info.assigning_authority)
-        identifiers = f"{hosp_case}^^^{assign_auth}^HOSP"
+        identifiers = f"{hosp_case}^^^HOSP^{assign_auth}"
         
         if hasattr(patient_info, 'nhs_number') and patient_info.nhs_number:
             nhs_num = sanitize_hl7_field(patient_info.nhs_number)
             verified = "Y" if patient_info.nhs_verification_status == "01" else "N"
-            identifiers += f"~{nhs_num}^{verified}^^NHS^NHSNO"
+            identifiers += f"~{nhs_num}^{verified}^^NHSNO^NHS"
         
         # 2. Name
         surname = sanitize_hl7_field(patient_info.surname)

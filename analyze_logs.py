@@ -39,7 +39,7 @@ def clean_message(message):
         return "has no date of birth, using placeholder 1970-01-01"
     
     # Group "Date of death earlier than date of birth" errors
-    if 'Date of death' in message and 'is earlir than date of birth' in message:
+    if 'Date of death' in message and 'is earlier than date of birth' in message:
         return "Date of death is earlier than date of birth"
     
     # Group "Reset invalid date of death" warnings
