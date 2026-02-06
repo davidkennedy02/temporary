@@ -12,7 +12,7 @@ import csv
 import os
 import traceback
 import time
-from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
+from multiprocessing import Pool
 
 import chardet
 import hl7_utilities
@@ -53,16 +53,22 @@ _idx = {
 }
 del _mapping  # Don't need this anymore
 
+# Global flag to track if this specific worker process has been set up (Python 3.6 compatible)
+_worker_setup_done = False
 
-def _worker_init(queue):
-    """
-    Initialize logging in worker process.
-    Called by ProcessPoolExecutor for each worker.
+# Module-level queue for worker processes (set via initializer)
+_worker_log_queue = None
+
+
+def _worker_init(log_queue):
+    """Initialize worker process with shared queue (Python 3.6 compatible).
     
     Args:
-        queue: The shared multiprocessing.Queue from main process
+        log_queue: The shared multiprocessing.Queue from main process
     """
-    AppLogger.setup_worker(queue)
+    global _worker_log_queue, _worker_setup_done
+    _worker_log_queue = log_queue
+    _worker_setup_done = False  # Reset for this worker process
 
 
 def calculate_age(birth_date):
@@ -179,6 +185,9 @@ def _validate_patient(patient_info, excluded_hospital_numbers):
 
 def process_record_batch(batch, batch_id, excluded_hospital_numbers=None):
     """Process a batch of raw patient records and convert them into HL7 messages.
+    
+    This function runs in a worker process and returns all log messages as tuples
+    for the main process to log centrally.
 
     Args:
         batch (list): A list of raw records (lists of strings).
@@ -188,6 +197,14 @@ def process_record_batch(batch, batch_id, excluded_hospital_numbers=None):
     Returns:
         list: A list of log tuples (message, level) generated during processing.
     """
+    global _worker_setup_done, _worker_log_queue
+    
+    # LAZY INITIALIZATION (Python 3.6 Compatible)
+    # Each worker process sets up logging on first batch it processes
+    if not _worker_setup_done and _worker_log_queue is not None:
+        AppLogger.setup_worker(_worker_log_queue)
+        _worker_setup_done = True
+    
     if excluded_hospital_numbers is None:
         excluded_hospital_numbers = {}
     
@@ -348,27 +365,6 @@ def get_file_reader_generator(file_path, file_type, batch_size, encoding='utf-8'
         yield from _read_file_batches(file_path, file_type, batch_size, 'utf-8', pas_separator)
 
 
-def _process_completed_futures(done_futures):
-    """Process completed futures and log their results."""
-    for future in done_futures:
-        try:
-            batch_logs = future.result()
-            for log_message, log_level in batch_logs:
-                logger.log(log_message, log_level)
-        except Exception:
-            pass  # Handled via batch_data
-
-
-def _handle_failed_batch(future, file_basename, failed_batches):
-    """Handle a failed batch future."""
-    if hasattr(future, 'batch_data'):
-        batch, batch_id = future.batch_data
-        logger.log(f"Batch {file_basename}:{batch_id} failed", "ERROR")
-        failed_batches.append((batch, batch_id))
-    else:
-        logger.log("Unknown batch failed", "ERROR")
-
-
 def _retry_failed_batches(failed_batches, file_basename, max_retries, excluded_hospital_numbers):
     """Retry failed batches with exponential backoff."""
     if not failed_batches:
@@ -430,39 +426,29 @@ def process_file_streaming(input_file, file_type, excluded_hospital_numbers=None
         # Generator yields batches lazily
         batch_generator = get_file_reader_generator(input_file, file_type, batch_size, encoding, pas_separator)
         
-        # Get the shared queue to pass to workers
+        # Get the shared queue to pass to workers via initializer
         log_queue = AppLogger.get_queue()
         
-        futures = set()
-        MAX_PENDING_BATCHES = num_workers * 2
+        # Prepare batch arguments: (batch, batch_id, excluded_hospital_numbers)
         batch_counter = 0
+        batch_args = []
+        for batch in batch_generator:
+            batch_counter += 1
+            batch_id = f"{file_basename}:{batch_counter}"
+            batch_args.append((batch, batch_id, excluded_hospital_numbers))
+        
         failed_batches = []
 
-        with ProcessPoolExecutor(max_workers=num_workers, initializer=_worker_init, initargs=(log_queue,)) as executor:
-            # Submit batches with backpressure control
-            for batch in batch_generator:
-                batch_counter += 1
-                batch_id = f"{batch_counter}"
-                
-                # Wait if too many tasks are pending
-                if len(futures) >= MAX_PENDING_BATCHES:
-                    done, futures = wait(futures, return_when=FIRST_COMPLETED)
-                    _process_completed_futures(done)
-                
-                future = executor.submit(process_record_batch, batch, f"{file_basename}:{batch_id}", excluded_hospital_numbers)
-                futures.add(future)
-                future.batch_data = (batch, batch_id)
-            
-            # Process remaining futures
-            while futures:
-                done, futures = wait(futures, return_when=FIRST_COMPLETED)
-                for future in done:
-                    try:
-                        batch_logs = future.result()
-                        for log_message, log_level in batch_logs:
-                            logger.log(log_message, log_level)
-                    except Exception:
-                        _handle_failed_batch(future, file_basename, failed_batches)
+        # Python 3.6 compatible - Pool with initializer to share queue through inheritance
+        with Pool(processes=num_workers, initializer=_worker_init, initargs=(log_queue,)) as pool:
+            # starmap processes batches in parallel
+            try:
+                for batch_logs in pool.starmap(process_record_batch, batch_args):
+                    # Log all messages from this batch
+                    for log_message, log_level in batch_logs:
+                        logger.log(log_message, log_level)
+            except Exception as e:
+                logger.log(f"Error during parallel processing: {str(e)}\n{traceback.format_exc()}", "ERROR")
         
         # Retry failed batches
         _retry_failed_batches(failed_batches, file_basename, max_retries, excluded_hospital_numbers)
