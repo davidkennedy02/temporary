@@ -49,7 +49,7 @@ class Patient:
                 internal_patient_number = f"UNK{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
                 logger.log(f"Generated placeholder internal patient number: {internal_patient_number}", "INFO")
                 
-            logger.log(f"Initializing Patient with internal_patient_number: {internal_patient_number}", "INFO")
+            logger.log(f"Initializing Patient with internal_patient_number: {internal_patient_number}", "DEBUG")
             
             self.internal_patient_number = self.validate_length(internal_patient_number, 12)
             self.assigning_authority = config.get_assigning_authority()  # From configuration
@@ -76,8 +76,6 @@ class Patient:
             self.death_indicator = self.parse_death_indicator(death_indicator)
             self.date_of_death = self.parse_date(date_of_death, "Date of death")
             self.registered_gp_code = self.validate_length(registered_gp_code, 8)
-            
-            # Do not have access to these lookups - for now, have truncated to 2 characters max - NEEDS FIXING
             self.ethnic_code = self.validate_length(ethnic_code, 2)
             
             # Safely validate phone numbers
@@ -112,7 +110,7 @@ class Patient:
             # Ensure minimum viable patient data
             self.ensure_minimum_data()
                 
-            logger.log(f"Patient initialized: {self}", "INFO")
+            logger.log(f"Patient initialized: {self}", "DEBUG")
         except Exception as e:
             error_trace = traceback.format_exc()
             logger.log(f"Error initializing patient: {e}\n{error_trace}", "ERROR")
@@ -129,9 +127,7 @@ class Patient:
 
     def ensure_minimum_data(self):
         """Ensures the patient has minimum required data for processing."""
-        # Note: surname validation is now handled in main.py processing logic
-        # We don't automatically assign placeholders here anymore
-            
+        
         # If no date of birth, add placeholder (1970-01-01)
         if not self.date_of_birth:
             self.date_of_birth = "19700101"

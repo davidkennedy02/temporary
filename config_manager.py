@@ -1,6 +1,6 @@
 import json
 import os
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 import multiprocessing
 
 class ConfigManager:
@@ -58,6 +58,36 @@ class ConfigManager:
             "directories": {
                 "input_folder": "input",
                 "output_folder": "output_hl7"
+            },
+            "file_settings": {
+                "pas_separator": "|",
+                "patient_mapping": {
+                    "internal_patient_number": 1,
+                    "assigning_authority": 2,
+                    "hospital_case_number": 3,
+                    "nhs_number": 4,
+                    "nhs_verification_status": 5,
+                    "surname": 6,
+                    "forename": 7,
+                    "date_of_birth": 8,
+                    "sex": 9,
+                    "patient_title": 10,
+                    "address_line_1": 11,
+                    "address_line_2": 12,
+                    "address_line_3": 13,
+                    "address_line_4": 14,
+                    "address_line_5": None,
+                    "postcode": 15,
+                    "death_indicator": 16,
+                    "date_of_death": 17,
+                    "registered_gp_code": 18,
+                    "ethnic_code": 19,
+                    "home_phone": 20,
+                    "work_phone": 21,
+                    "mobile_phone": 22,
+                    "registered_gp": 23,
+                    "registered_practice": 24
+                }
             },
             "hl7_settings": {
                 "sending_application": "CSV2HL7_Converter",
@@ -230,6 +260,14 @@ class ConfigManager:
     def get_pv1_referring_doctor_id(self) -> str:
         """Get PV1 referring doctor ID."""
         return self.get('pv1_settings.referring_doctor_id', 'AUSHICPR')
+    
+    def get_pas_separator(self) -> str:
+        """Get PAS file separator character."""
+        return self.get('file_settings.pas_separator', '|')
+    
+    def get_patient_mapping(self) -> Dict[str, Any]:
+        """Get patient field mapping configuration."""
+        return self.get('file_settings.patient_mapping', {})
     
     def validate_config(self) -> list:
         """Validate configuration and return list of issues found.

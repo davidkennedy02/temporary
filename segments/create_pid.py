@@ -2,7 +2,6 @@
 from logger import AppLogger
 from patientinfo import Patient
 import traceback
-from hl7apy.core import Field
 
 logger = AppLogger()
 
@@ -21,27 +20,58 @@ def create_pid(patient_info:Patient, hl7):
         # Set each field safely, catching any attribute errors
         hl7.pid.pid_1 = "1"
         
-        # Dictionary mapping patient attributes to PID fields for cleaner code
-        pid_mappings = [
-            (lambda p: p.hospital_case_number, lambda h, v: setattr(h.pid.pid_3, 'pid_3_1', v)),
-            (lambda p: p.assigning_authority, lambda h, v: setattr(h.pid.pid_3, 'pid_3_4', v)),
-            (lambda p: "HOSP", lambda h, v: setattr(h.pid.pid_3, 'pid_3_5', v)),
-            (lambda p: p.surname, lambda h, v: setattr(h.pid.pid_5, 'pid_5_1', v)),
-            (lambda p: p.forename, lambda h, v: setattr(h.pid.pid_5, 'pid_5_2', v)),
-            (lambda p: p.patient_title, lambda h, v: setattr(h.pid.pid_5, 'pid_5_5', v)),
-            (lambda p: p.date_of_birth, lambda h, v: setattr(h.pid, 'pid_7', v)),
-            (lambda p: p.sex, lambda h, v: setattr(h.pid, 'pid_8', v)),
-        ]
+        patient_id = getattr(patient_info, 'internal_patient_number', 'Unknown')
         
-        # Apply the base mappings for the first PID.3 instance
-        for getter, setter in pid_mappings:
-            try:
-                value = getter(patient_info)
-                if value is not None:  # Only set if not None
-                    setter(hl7, value)
-            except Exception as field_error:
-                patient_id = getattr(patient_info, 'internal_patient_number', 'Unknown')
-                logger.log(f"Error setting base PID field for patient {patient_id}: {field_error}", "WARNING")
+        # Set patient identifier fields (PID.3)
+        try:
+            if patient_info.hospital_case_number:
+                hl7.pid.pid_3.pid_3_1 = patient_info.hospital_case_number
+        except (AttributeError, Exception) as e:
+            logger.log(f"Error setting hospital_case_number for patient {patient_id}: {e}", "WARNING")
+        
+        try:
+            hl7.pid.pid_3.pid_3_4 = "HOSP"
+        except Exception as e:
+            logger.log(f"Error setting identifier type for patient {patient_id}: {e}", "WARNING")
+        
+        try:
+            if patient_info.assigning_authority:
+                hl7.pid.pid_3.pid_3_5 = patient_info.assigning_authority
+        except (AttributeError, Exception) as e:
+            logger.log(f"Error setting assigning_authority for patient {patient_id}: {e}", "WARNING")
+        
+        # Set patient name fields (PID.5)
+        try:
+            if patient_info.surname:
+                hl7.pid.pid_5.pid_5_1 = patient_info.surname
+        except (AttributeError, Exception) as e:
+            logger.log(f"Error setting surname for patient {patient_id}: {e}", "WARNING")
+        
+        try:
+            if patient_info.forename:
+                hl7.pid.pid_5.pid_5_2 = patient_info.forename
+        except (AttributeError, Exception) as e:
+            logger.log(f"Error setting forename for patient {patient_id}: {e}", "WARNING")
+        
+        try:
+            if patient_info.patient_title:
+                hl7.pid.pid_5.pid_5_5 = patient_info.patient_title
+        except (AttributeError, Exception) as e:
+            logger.log(f"Error setting patient_title for patient {patient_id}: {e}", "WARNING")
+        
+        # Set date of birth (PID.7)
+        try:
+            if patient_info.date_of_birth:
+                hl7.pid.pid_7 = patient_info.date_of_birth
+        except (AttributeError, Exception) as e:
+            logger.log(f"Error setting date_of_birth for patient {patient_id}: {e}", "WARNING")
+        
+        # Set sex (PID.8)
+        try:
+            if patient_info.sex:
+                hl7.pid.pid_8 = patient_info.sex
+        except (AttributeError, Exception) as e:
+            logger.log(f"Error setting sex for patient {patient_id}: {e}", "WARNING")
         
         # Add additional PID.3 instances for other patient identifiers
         try:
@@ -51,93 +81,99 @@ def create_pid(patient_info:Patient, hl7):
                 pid3_rep = hl7.pid.add_field("pid_3")
                 pid3_rep.pid_3_1 = patient_info.nhs_number
                 pid3_rep.pid_3_2 = "Y" if patient_info.nhs_verification_status == "01" else "N"
-                pid3_rep.pid_3_4 = "NHS"  # NHS assigning authority
-                pid3_rep.pid_3_5 = "NHSNO"  # NHS identifier type
-                
+                pid3_rep.pid_3_4 = "NHSNO"  # NHS identifier type
+                pid3_rep.pid_3_5 = "NHS"  # NHS assigning authority
         except Exception as field_error:
-            patient_id = getattr(patient_info, 'internal_patient_number', 'Unknown')
-            logger.log(f"Error adding additional identifiers for patient {patient_id}: {field_error}", "WARNING")
+            logger.log(f"Error adding NHS number for patient {patient_id}: {field_error}", "WARNING")
         
-        # Process address fields if they exist
-        addr_mappings = []
+        # Set address fields (PID.11)
         if hasattr(patient_info, 'address') and isinstance(patient_info.address, list):
             addr_lines = patient_info.address
             addr_count = len(addr_lines)
             
-            # Special case for exactly 5 address lines - omit address line 3
-            if addr_count == 5:
-                addr_mappings.extend([
-                    # First address line goes to address line 1 (pid_11_1)
-                    (lambda p: p.address[0], lambda h, v: setattr(h.pid.pid_11, 'pid_11_1', v)),
-                    # Second address line goes to address line 2 (pid_11_2)
-                    (lambda p: p.address[1], lambda h, v: setattr(h.pid.pid_11, 'pid_11_2', v)),
-                    # Third address line is omitted
-                    # Fourth address line goes to city (pid_11_3)
-                    (lambda p: p.address[3], lambda h, v: setattr(h.pid.pid_11, 'pid_11_3', v)),
-                    # Fifth address line goes to state (pid_11_4)
-                    (lambda p: p.address[4], lambda h, v: setattr(h.pid.pid_11, 'pid_11_4', v))
-                ])
-            # Special case for exactly 4 address lines - map directly to the 4 fields
-            elif addr_count == 4:
-                addr_mappings.extend([
-                    # First address line goes to address line 1 (pid_11_1)
-                    (lambda p: p.address[0], lambda h, v: setattr(h.pid.pid_11, 'pid_11_1', v)),
-                    # Second address line goes to address line 2 (pid_11_2)
-                    (lambda p: p.address[1], lambda h, v: setattr(h.pid.pid_11, 'pid_11_2', v)),
-                    # Third address line goes to city (pid_11_3)
-                    (lambda p: p.address[2], lambda h, v: setattr(h.pid.pid_11, 'pid_11_3', v)),
-                    # Fourth address line goes to state (pid_11_4)
-                    (lambda p: p.address[3], lambda h, v: setattr(h.pid.pid_11, 'pid_11_4', v))
-                ])
-            # Special case for exactly 3 address lines
-            elif addr_count == 3:
-                addr_mappings.extend([
-                    # First address line goes to address line 1 (pid_11_1)
-                    (lambda p: p.address[0], lambda h, v: setattr(h.pid.pid_11, 'pid_11_1', v)),
-                    # Second address line goes to address line 2 (pid_11_2)
-                    (lambda p: p.address[1], lambda h, v: setattr(h.pid.pid_11, 'pid_11_2', v)),
-                    # Third address line goes to city (pid_11_3)
-                    (lambda p: p.address[2], lambda h, v: setattr(h.pid.pid_11, 'pid_11_3', v))
-                ])
-            # Special case for exactly 2 address lines
-            elif addr_count == 2:
-                # First address line goes to address line 1 (pid_11_1)
-                addr_mappings.append(
-                    (lambda p: p.address[0], lambda h, v: setattr(h.pid.pid_11, 'pid_11_1', v))
-                )
-                # Second address line goes to city (pid_11_3)
-                addr_mappings.append(
-                    (lambda p: p.address[1], lambda h, v: setattr(h.pid.pid_11, 'pid_11_3', v))
-                )
-            # For all other cases, map addresses as before
-            else:
-                for i in range(min(5, addr_count)):
-                    addr_mappings.append(
-                        (lambda p, idx=i: p.address[idx], lambda h, v, idx=i: setattr(h.pid.pid_11, f'pid_11_{idx+1}', v))
-                    )
-                
-        # Add postcode and phone numbers
-        final_mappings = [
-            (lambda p: p.postcode, lambda h, v: setattr(h.pid.pid_11, 'pid_11_5', v)),
-            (lambda p: p.home_phone, lambda h, v: setattr(h.pid, 'pid_13', v)),
-            (lambda p: p.mobile_phone, lambda h, v: setattr(h.pid, 'pid_14', v)),
-            (lambda p: p.date_of_death, lambda h, v: setattr(h.pid, 'pid_29', v)),
-            (lambda p: p.death_indicator, lambda h, v: setattr(h.pid, 'pid_30', v)),
-        ]
-        
-        # Combine all mappings
-        all_mappings = pid_mappings + addr_mappings + final_mappings
-        
-        # Apply each mapping safely
-        for getter, setter in all_mappings:
             try:
-                value = getter(patient_info)
-                if value is not None:  # Only set if not None
-                    setter(hl7, value)
-            except Exception as field_error:
-                patient_id = getattr(patient_info, 'internal_patient_number', 'Unknown')
-                logger.log(f"Error setting PID field for patient {patient_id}: {field_error}", "WARNING")
-                # Continue with other fields
+                if addr_count == 5:
+                    # Special case: 5 lines - omit address line 3
+                    if addr_lines[0]:
+                        hl7.pid.pid_11.pid_11_1 = addr_lines[0]  # Address line 1
+                    if addr_lines[1]:
+                        hl7.pid.pid_11.pid_11_2 = addr_lines[1]  # Address line 2
+                    # addr_lines[2] is omitted
+                    if addr_lines[3]:
+                        hl7.pid.pid_11.pid_11_3 = addr_lines[3]  # City
+                    if addr_lines[4]:
+                        hl7.pid.pid_11.pid_11_4 = addr_lines[4]  # State
+                        
+                elif addr_count == 4:
+                    # Map directly to 4 fields
+                    if addr_lines[0]:
+                        hl7.pid.pid_11.pid_11_1 = addr_lines[0]  # Address line 1
+                    if addr_lines[1]:
+                        hl7.pid.pid_11.pid_11_2 = addr_lines[1]  # Address line 2
+                    if addr_lines[2]:
+                        hl7.pid.pid_11.pid_11_3 = addr_lines[2]  # City
+                    if addr_lines[3]:
+                        hl7.pid.pid_11.pid_11_4 = addr_lines[3]  # State
+                        
+                elif addr_count == 3:
+                    # Map to 3 fields
+                    if addr_lines[0]:
+                        hl7.pid.pid_11.pid_11_1 = addr_lines[0]  # Address line 1
+                    if addr_lines[1]:
+                        hl7.pid.pid_11.pid_11_2 = addr_lines[1]  # Address line 2
+                    if addr_lines[2]:
+                        hl7.pid.pid_11.pid_11_3 = addr_lines[2]  # City
+                        
+                elif addr_count == 2:
+                    # First line to address line 1, second to city
+                    if addr_lines[0]:
+                        hl7.pid.pid_11.pid_11_1 = addr_lines[0]  # Address line 1
+                    if addr_lines[1]:
+                        hl7.pid.pid_11.pid_11_3 = addr_lines[1]  # City
+                        
+                else:
+                    # For all other cases, map up to 5 lines sequentially
+                    for i in range(min(5, addr_count)):
+                        if addr_lines[i]:
+                            setattr(hl7.pid.pid_11, f'pid_11_{i+1}', addr_lines[i])
+                            
+            except Exception as e:
+                logger.log(f"Error setting address fields for patient {patient_id}: {e}", "WARNING")
+        
+        # Set postcode (PID.11.5)
+        try:
+            if patient_info.postcode:
+                hl7.pid.pid_11.pid_11_5 = patient_info.postcode
+        except (AttributeError, Exception) as e:
+            logger.log(f"Error setting postcode for patient {patient_id}: {e}", "WARNING")
+        
+        # Set home phone (PID.13)
+        try:
+            if patient_info.home_phone:
+                hl7.pid.pid_13 = patient_info.home_phone
+        except (AttributeError, Exception) as e:
+            logger.log(f"Error setting home_phone for patient {patient_id}: {e}", "WARNING")
+        
+        # Set mobile phone (PID.14)
+        try:
+            if patient_info.mobile_phone:
+                hl7.pid.pid_14 = patient_info.mobile_phone
+        except (AttributeError, Exception) as e:
+            logger.log(f"Error setting mobile_phone for patient {patient_id}: {e}", "WARNING")
+        
+        # Set date of death (PID.29)
+        try:
+            if patient_info.date_of_death:
+                hl7.pid.pid_29 = patient_info.date_of_death
+        except (AttributeError, Exception) as e:
+            logger.log(f"Error setting date_of_death for patient {patient_id}: {e}", "WARNING")
+        
+        # Set death indicator (PID.30)
+        try:
+            if patient_info.death_indicator:
+                hl7.pid.pid_30 = patient_info.death_indicator
+        except (AttributeError, Exception) as e:
+            logger.log(f"Error setting death_indicator for patient {patient_id}: {e}", "WARNING")
         
     except Exception as e:
         error_trace = traceback.format_exc()

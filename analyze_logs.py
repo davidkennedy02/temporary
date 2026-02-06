@@ -19,21 +19,26 @@ def get_log_file(config):
 
 def clean_message(message):
     """Generalize the message by masking dynamic IDs and values."""
-    # Mask Patient Internal Numbers (e.g., C023444, 12345)
-    msg = re.sub(r'Patient internal number [A-Z0-9]+', 'Patient internal number <ID>', message)
-    msg = re.sub(r'Patient [A-Z0-9]+ ', 'Patient <ID> ', msg)
-    msg = re.sub(r'patient [A-Z0-9]+', 'patient <ID>', msg)
-    msg = re.sub(r'Skipping patient [A-Z0-9]+', 'Skipping patient <ID>', msg)
     
-    # Mask specific timestamps or invalid dates
-    # "Invalid date TR26 2NU" -> "Invalid date <VALUE>"
-    msg = re.sub(r'Invalid date [^ ]+', 'Invalid date <VALUE>', msg)
+    # Extract the reason for field count errors
+    match = re.search(r'Skipping record in batch [^:]+:\d+ record \d+ \(Patient [A-Z0-9]+\) - (.+)$', message)
+    if match:
+        return match.group(1)
     
-    # Mask variable dates in comparisons
-    msg = re.sub(r'earlier than date of birth \d+', 'earlier than date of birth <DOB>', msg)
+    # Extract the reason for patient skip warnings
+    match = re.search(r'Skipping patient [A-Z0-9]+ in batch [^:]+:\d+ record \d+ - (.+)$', message)
+    if match:
+        return match.group(1)
     
-    # Mask other potential IDs if needed
-    return msg.strip()
+    # Failed to create HL7 message
+    if 'Failed to create HL7 message for patient' in message:
+        return "Failed to create HL7 message"
+    
+    # Group "Patient X has no date of birth" messages
+    if 'has no date of birth, using placeholder' in message:
+        return "has no date of birth, using placeholder 1970-01-01"
+    
+    return message.strip()
 
 def analyze_logs():
     config = load_config()
@@ -47,18 +52,44 @@ def analyze_logs():
     
     # regex for standard log format
     # 2026-02-05 09:46:49,520 - ERROR - Message...
-    log_pattern = re.compile(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} - (WARNING|ERROR) - (.*)$')
+    log_pattern = re.compile(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} - (WARNING|ERROR|INFO) - (.*)$')
+    
+    # Pattern to extract saved message counts: "Successfully saved X messages for batch..."
+    saved_pattern = re.compile(r'Successfully saved (\d+) messages for batch')
+    
+    # Pattern to extract batch record counts: "Starting to process batch ... with X records"
+    batch_start_pattern = re.compile(r'Starting to process batch .+ with (\d+) records')
+    
+    # Pattern to extract batch completion for verification
+    batch_pattern = re.compile(r'Batch .+ completed: (\d+)/(\d+) records')
     
     warnings = Counter()
     errors = Counter()
-    
     line_count = 0
+    total_saved = 0
+    total_records = 0
+    total_records_from_batches = 0
     
     with open(log_file, 'r', encoding='utf-8') as f:
         for line in f:
             line_count += 1
             if line_count % 100000 == 0:
                 print(f"Processed {line_count} lines...", end='\r')
+            
+            # Count total records from batch starts
+            batch_start_match = batch_start_pattern.search(line)
+            if batch_start_match:
+                total_records += int(batch_start_match.group(1))
+            
+            # Count saved messages
+            saved_match = saved_pattern.search(line)
+            if saved_match:
+                total_saved += int(saved_match.group(1))
+            
+            # Count total records from batch completions (for verification)
+            batch_match = batch_pattern.search(line)
+            if batch_match:
+                total_records_from_batches += int(batch_match.group(2))
                 
             match = log_pattern.match(line)
             if match:
@@ -74,9 +105,27 @@ def analyze_logs():
     print(f"LOG ANALYSIS REPORT - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("="*80)
     
-    print(f"\nTotal Lines Processed: {line_count}")
-    print(f"Total Warnings: {sum(warnings.values())}")
-    print(f"Total Errors:   {sum(errors.values())}")
+    print(f"\nTotal Lines Processed: {line_count:,}")
+    # derived values
+    total_errors = sum(errors.values())
+    total_initialized = total_records - total_errors
+    actually_skipped = total_initialized - total_saved
+    
+    print(f"\nProcessing Summary:")
+    print(f"  Total Records:     {total_records:,}")
+    print(f"  Errors (skipped):  {total_errors:,} (invalid format, never initialized)")
+    print(f"  Initialized:       {total_initialized:,}")
+    print(f"  Skipped:           {actually_skipped:,} (initialized but failed validation)")
+    print(f"  Saved to HL7:      {total_saved:,}")
+    print(f"\nVerification: {total_errors} errors + {total_initialized} initialized = {total_errors + total_initialized} (should equal {total_records})")
+    print(f"              {total_saved} saved + {actually_skipped} skipped = {total_saved + actually_skipped} (should equal {total_initialized})")
+    if total_records_from_batches > 0:
+        print(f"              Batch completions report {total_records_from_batches} total records (cross-check)")
+    
+    print(f"\nLog Message Counts:")
+    print(f"  Total Warnings: {sum(warnings.values()):,} (some informational, {actually_skipped} actual skips)")
+    print(f"  Total Errors:   {total_errors:,} (some informational, {actually_skipped} actual skips)")
+    print(f"  Total Errors:   {sum(errors.values()):,}")
     
     print("\n" + "-"*80)
     print("ERRORS (Count Descending)")
