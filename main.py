@@ -43,14 +43,8 @@ if __name__ == "__main__":
         
         logger.log("CSVtoHL7 process completed successfully", "INFO")
         
-        # CRITICAL: Ensure all logs written before exit
-        AppLogger.flush_queue()
-        
     except Exception as e:
         error_trace = traceback.format_exc()
         logger.log(f"Critical error in main process: {str(e)}\n{error_trace}", "CRITICAL")
-        
-        # Flush logs even on error
-        AppLogger.flush_queue()
         sys.exit(1)
 

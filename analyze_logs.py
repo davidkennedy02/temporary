@@ -38,6 +38,14 @@ def clean_message(message):
     if 'has no date of birth, using placeholder' in message:
         return "has no date of birth, using placeholder 1970-01-01"
     
+    # Group "Date of death earlier than date of birth" errors
+    if 'Date of death' in message and 'is earlir than date of birth' in message:
+        return "Date of death is earlier than date of birth"
+    
+    # Group "Reset invalid date of death" warnings
+    if 'Reset invalid date of death to None for patient' in message:
+        return "Reset invalid date of death to None"
+    
     return message.strip()
 
 def analyze_logs():
@@ -123,9 +131,8 @@ def analyze_logs():
         print(f"              Batch completions report {total_records_from_batches} total records (cross-check)")
     
     print(f"\nLog Message Counts:")
-    print(f"  Total Warnings: {sum(warnings.values()):,} (some informational, {actually_skipped} actual skips)")
-    print(f"  Total Errors:   {total_errors:,} (some informational, {actually_skipped} actual skips)")
-    print(f"  Total Errors:   {sum(errors.values()):,}")
+    print(f"  Total Warnings: {sum(warnings.values()):,} ({actually_skipped} validation failures)")
+    print(f"  Total Errors:   {total_errors:,} ({total_errors} records with invalid format)")
     
     print("\n" + "-"*80)
     print("ERRORS (Count Descending)")

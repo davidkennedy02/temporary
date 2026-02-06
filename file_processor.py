@@ -56,20 +56,6 @@ del _mapping  # Don't need this anymore
 # Global flag to track if this specific worker process has been set up (Python 3.6 compatible)
 _worker_setup_done = False
 
-# Module-level queue for worker processes (set via initializer)
-_worker_log_queue = None
-
-
-def _worker_init(log_queue):
-    """Initialize worker process with shared queue (Python 3.6 compatible).
-    
-    Args:
-        log_queue: The shared multiprocessing.Queue from main process
-    """
-    global _worker_log_queue, _worker_setup_done
-    _worker_log_queue = log_queue
-    _worker_setup_done = False  # Reset for this worker process
-
 
 def calculate_age(birth_date):
     """Calculate the current age from a date of birth.
@@ -197,12 +183,12 @@ def process_record_batch(batch, batch_id, excluded_hospital_numbers=None):
     Returns:
         list: A list of log tuples (message, level) generated during processing.
     """
-    global _worker_setup_done, _worker_log_queue
+    global _worker_setup_done
     
     # LAZY INITIALIZATION (Python 3.6 Compatible)
-    # Each worker process sets up logging on first batch it processes
-    if not _worker_setup_done and _worker_log_queue is not None:
-        AppLogger.setup_worker(_worker_log_queue)
+    # Each worker process sets up logging to worker_[PID].log on first batch
+    if not _worker_setup_done:
+        AppLogger.setup_worker()
         _worker_setup_done = True
     
     if excluded_hospital_numbers is None:
@@ -252,7 +238,7 @@ def process_record_batch(batch, batch_id, excluded_hospital_numbers=None):
                 # Generate HL7 message (fast method with fallback)
                 hl7_message = hl7_utilities.create_adt_message_fast(patient_info=patient_info, event_type=event_type)
                 if not hl7_message:
-                    logger.log(f"Fast HL7 generation failed for patient {patient_info.internal_patient_number}. Falling back to legacy method.", "WARNING")
+                    batch_log.append((f"Fast HL7 generation failed for patient {patient_info.internal_patient_number}. Falling back to legacy method.", "WARNING"))
                     hl7_message = hl7_utilities.create_adt_message(patient_info=patient_info, event_type=event_type)
                 
                 if hl7_message:
@@ -365,6 +351,20 @@ def get_file_reader_generator(file_path, file_type, batch_size, encoding='utf-8'
         yield from _read_file_batches(file_path, file_type, batch_size, 'utf-8', pas_separator)
 
 
+def unpack_and_process(args):
+    """
+    Helper function to unpack arguments for pool.imap_unordered.
+    imap only accepts single arguments, so we unpack the tuple here.
+    
+    Args:
+        args (tuple): (batch, batch_id, excluded_hospital_numbers)
+    
+    Returns:
+        list: Log tuples from process_record_batch
+    """
+    return process_record_batch(*args)
+
+
 def _retry_failed_batches(failed_batches, file_basename, max_retries, excluded_hospital_numbers):
     """Retry failed batches with exponential backoff."""
     if not failed_batches:
@@ -426,24 +426,21 @@ def process_file_streaming(input_file, file_type, excluded_hospital_numbers=None
         # Generator yields batches lazily
         batch_generator = get_file_reader_generator(input_file, file_type, batch_size, encoding, pas_separator)
         
-        # Get the shared queue to pass to workers via initializer
-        log_queue = AppLogger.get_queue()
-        
-        # Prepare batch arguments: (batch, batch_id, excluded_hospital_numbers)
-        batch_counter = 0
-        batch_args = []
-        for batch in batch_generator:
-            batch_counter += 1
-            batch_id = f"{file_basename}:{batch_counter}"
-            batch_args.append((batch, batch_id, excluded_hospital_numbers))
+        # MEMORY-SAFE: Create generator expression (not list!) for lazy evaluation
+        # This ensures we don't load the entire file into memory before processing
+        batch_args_generator = (
+            (batch, f"{file_basename}:{i+1}", excluded_hospital_numbers)
+            for i, batch in enumerate(batch_generator)
+        )
         
         failed_batches = []
 
-        # Python 3.6 compatible - Pool with initializer to share queue through inheritance
-        with Pool(processes=num_workers, initializer=_worker_init, initargs=(log_queue,)) as pool:
-            # starmap processes batches in parallel
+        # Python 3.6 compatible - Pool without initializer (workers set up lazily)
+        with Pool(processes=num_workers) as pool:
+            # imap_unordered: Lazy, memory-efficient streaming processing
+            # Processes batches as they're read, not after loading entire file
             try:
-                for batch_logs in pool.starmap(process_record_batch, batch_args):
+                for batch_logs in pool.imap_unordered(unpack_and_process, batch_args_generator):
                     # Log all messages from this batch
                     for log_message, log_level in batch_logs:
                         logger.log(log_message, log_level)

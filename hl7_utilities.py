@@ -123,7 +123,7 @@ def create_adt_message(patient_info:patientinfo.Patient, event_type:str="A28"):
         return None
     
 
-def _setup_output_directory(base_path, batch_id:int|str) -> Path | None:
+def _setup_output_directory(base_path, batch_id):
     """Sets up the output directory with fallback handling.
     
     Args:
@@ -154,7 +154,7 @@ def _setup_output_directory(base_path, batch_id:int|str) -> Path | None:
             return None
 
 
-def _extract_year_from_message(message, batch_id:int|str) -> str:
+def _extract_year_from_message(message, batch_id) -> str:
     """Extracts the year of birth from an HL7 message.
     
     Args:
@@ -188,7 +188,7 @@ def _extract_year_from_message(message, batch_id:int|str) -> str:
     return "unknown"
 
 
-def _save_single_hl7_file(message, file_path:Path, patient_identifier:str, batch_id:int|str, sequence_num:int, max_retries:int=5) -> bool:
+def _save_single_hl7_file(message, file_path:Path, patient_identifier:str, batch_id, sequence_num:int, max_retries:int=5) -> bool:
     """Saves a single HL7 message to file with retry logic.
     
     Args:
@@ -236,7 +236,7 @@ def _save_single_hl7_file(message, file_path:Path, patient_identifier:str, batch
     return False
 
 
-def save_hl7_messages_batch(hl7_messages:list, hl7_folder_path:str, batch_id:int|str) -> None:
+def save_hl7_messages_batch(hl7_messages:list, hl7_folder_path:str, batch_id) -> None:
     """Saves multiple HL7 messages as separate files.
 
     Args:
@@ -339,7 +339,7 @@ def sanitize_hl7_field(value: str) -> str:
     return str_val
 
 
-def create_adt_message_fast(patient_info: patientinfo.Patient, event_type="A28") -> str | None:
+def create_adt_message_fast(patient_info: patientinfo.Patient, event_type="A28"):
     """
     Creates an HL7 ADT message using fast f-string formatting.
     Bypasses hl7apy overhead for >10x speed.
