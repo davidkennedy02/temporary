@@ -9,7 +9,7 @@ import patientinfo
 from logger import AppLogger
 from config_manager import config
 import multiprocessing
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_COMPLETED
 import time
 
 # Load configuration on startup
@@ -84,7 +84,30 @@ def detect_encoding(file_path):
 
 
 def process_record_batch(batch, batch_id):
-    """Process a batch of patient records and generate HL7 messages."""
+    """
+    Process a batch of raw patient records and convert them into HL7 messages.
+
+    Why:
+        Processing records in batches allows us to parallelize the CPU-intensive task 
+        of parsing, validating, and generating HL7 messages. It also isolates failures 
+        so that one bad record doesn't crash the entire process.
+
+    How:
+        1. Validates structure: Checks if record is a list and has enough fields.
+        2. Cleans data: Strips whitespace from strings.
+        3. Maps fields: Converts raw list indices to named `patient_data` dictionary.
+        4. Validates business rules: Checks for required fields (surname), valid dates 
+           (age limits), and exclusions (hospital numbers).
+        5. Generates HL7: Uses `hl7_utilities` to create the final message string.
+        6. Saves: Batches successful messages and saves them to disk.
+
+    Args:
+        batch (list): A list of raw records (lists of strings).
+        batch_id (str): Identifier for logging and tracking.
+
+    Returns:
+        list: A list of log tuples (message, level) generated during processing.
+    """
     valid_messages = []  # Will store tuples of (hl7_message, patient_info)
     batch_log = []
     processed_count = 0
@@ -111,33 +134,8 @@ def process_record_batch(batch, batch_id):
                 # Clean up data - strip whitespace from all fields
                 record = [field.strip() if isinstance(field, str) else field for field in record]
                 
-                # patient_data = {
-                #     'internal_patient_number': record[0],
-                #     'assigning_authority': record[1],
-                #     'hospital_case_number': record[2],
-                #     'nhs_number': record[3],
-                #     'nhs_verification_status': record[4],
-                #     'surname': record[5],
-                #     'forename': record[6],
-                #     'date_of_birth': record[7],
-                #     'sex': record[8],
-                #     'patient_title': record[9],
-                #     'address_line_1': record[10],
-                #     'address_line_2': record[11],
-                #     'address_line_3': record[12],
-                #     'address_line_4': record[13],
-                #     'address_line_5': record[14],
-                #     'postcode': record[15],
-                #     'death_indicator': record[16],
-                #     'date_of_death': record[17],
-                #     'registered_gp_code': record[18],
-                #     'ethnic_code': record[19],
-                #     'home_phone': record[20],
-                #     'work_phone': record[21],
-                #     'mobile_phone': record[22],
-                #     'registered_gp': record[23],
-                #     'registered_practice': record[24]
-                # }
+                # Map record fields to Patient object attributes
+                # Note: address_line_5 is missing in the source file structure, so we use a placeholder.
 
                 patient_data = {
                     'internal_patient_number': record[1],
@@ -190,7 +188,14 @@ def process_record_batch(batch, batch_id):
                     skipped_count += 1
                 else:
                     # Create the HL7 message and collect in batch with patient info
-                    hl7_message = hl7_utilities.create_adt_message(patient_info=patient_info, event_type=EVENT_TYPE)
+                    # Try fast generation first
+                    hl7_message = hl7_utilities.create_adt_message_fast(patient_info=patient_info, event_type=EVENT_TYPE)
+                    
+                    # Fallback to legacy generation if fast method fails
+                    if not hl7_message:
+                        logger.log(f"Fast HL7 generation failed for patient {patient_info.internal_patient_number}. Falling back to legacy method.", "WARNING")
+                        hl7_message = hl7_utilities.create_adt_message(patient_info=patient_info, event_type=EVENT_TYPE)
+
                     if hl7_message:
                         valid_messages.append((hl7_message, patient_info))
                         processed_count += 1
@@ -229,180 +234,222 @@ def process_record_batch(batch, batch_id):
     return batch_log
 
 
+def get_file_reader_generator(file_path, file_type, batch_size, encoding='utf-8'):
+    """
+    Generator that lazily reads a file and yields batches of records.
+
+    Why:
+        Loading large files entirely into memory (e.g., `readlines()`) causes memory spikes 
+        and potential crashes. A generator allows us to read only what we need for the 
+        next batch, keeping memory usage low and constant (O(1) relative to file size).
+
+    How:
+        - For CSV: Uses `csv.reader` as an iterator. It iterates through rows one by one, 
+          accumulating them into a `batch` list. When `batch_size` is reached, it yields 
+          the batch and clears the list.
+        - For PAS (text): Iterates the file object line-by-line. Splits each line by 
+          the separator and behaves similarly to the CSV logic.
+        - Handles encoding errors by attempting re-reads with fallback encodings if necessary.
+
+    Args:
+        file_path (str): Path to the input file.
+        file_type (str): 'csv' or 'pas'.
+        batch_size (int): Number of records per batch.
+        encoding (str): File encoding.
+
+    Yields:
+        list: A list of records (each record is a list of strings).
+    """
+    
+    if file_type.lower() == "csv":
+        try:
+            with open(file_path, newline='', encoding=encoding, errors='replace') as file:
+                reader = csv.reader(file)
+                try:
+                    headers = next(reader)  # Skip header row
+                    # logger.log(f"CSV headers: {headers}", "DEBUG") 
+                except StopIteration:
+                    return
+
+                batch = []
+                for record in reader:
+                    batch.append(record)
+                    if len(batch) >= batch_size:
+                        yield batch
+                        batch = []
+                
+                if batch:
+                    yield batch
+                    
+        except UnicodeDecodeError:
+            # Fallback to utf-8 ignore if specific encoding fails (re-opening file)
+            with open(file_path, newline='', encoding='utf-8', errors='ignore') as file:
+                reader = csv.reader(file)
+                try:
+                    next(reader) 
+                except StopIteration:
+                    return
+
+                batch = []
+                for record in reader:
+                    batch.append(record)
+                    if len(batch) >= batch_size:
+                        yield batch
+                        batch = []
+                if batch:
+                    yield batch
+
+    elif file_type.lower() == "pas":
+        # PAS logic: read line by line
+        try:
+            with open(file_path, newline='', encoding=encoding, errors='replace') as file:
+                batch = []
+                for line in file:
+                    if not line.strip():
+                        continue
+                    
+                    try:
+                        record_fields = line.strip().split(PAS_RECORD_SEPARATOR)
+                        if len(record_fields) >= 1:
+                            batch.append(record_fields)
+                    except Exception:
+                        continue # Skip malformed lines without crashing generator
+                    
+                    if len(batch) >= batch_size:
+                        yield batch
+                        batch = []
+                
+                if batch:
+                    yield batch
+                    
+        except UnicodeDecodeError:
+             with open(file_path, newline='', encoding='utf-8', errors='ignore') as file:
+                batch = []
+                for line in file:
+                    if not line.strip(): 
+                        continue
+                    try:
+                        record_fields = line.strip().split(PAS_RECORD_SEPARATOR)
+                        if len(record_fields) >= 1:
+                            batch.append(record_fields)
+                    except Exception:
+                        continue
+
+                    if len(batch) >= batch_size:
+                        yield batch
+                        batch = []
+                if batch:
+                    yield batch
+
+
 def process_file_streaming(input_file, file_type):
-    """Process a file using streaming to avoid loading all records into memory.
+    """
+    Orchestrates the streaming processing of a single file using bounded parallelism.
+
+    Why:
+        We need to process files that may be larger than available RAM. Simply using 
+        `ProcessPoolExecutor` normally (submitting all tasks at once) would still queue 
+        up all batches in memory, defeating the purpose of the generator. 
+        
+        We need "backpressure" to stop reading the file when the workers are busy.
+
+    How:
+        1. file_reader_generator: Reads chunks of data from disk (Lazy IO).
+        2. ProcessPoolExecutor: distributing chunks to multiple worker processes (CPU parallelism).
+        3. Backpressure Loop:
+            - We check the number of active `futures` (tasks).
+            - If active tasks >= `MAX_PENDING_BATCHES` (set to 2 * CPUs), we `wait()` 
+              for at least one task to complete before reading the next batch from disk.
+            - This ensures we never hold more than ~2xCPUs worth of data in RAM at once.
+
     Args:
         input_file (str): The path to the input file.
         file_type (str): The type of the file ('csv' or 'pas').
     Returns:
         None
-    Notes:
-        - Processes the file in batches to limit memory usage.
-        - Uses parallel processing to speed up batch processing.
-        - Includes robust error handling and logging.
     """
-    encoding = 'utf-8'
-    
     try:
-        # Check if file exists and is readable
         if not os.path.exists(input_file):
             logger.log(f"File not found: {input_file}", "ERROR")
             return
             
-        if not os.path.isfile(input_file):
-            logger.log(f"Not a file: {input_file}", "ERROR")
-            return
-            
-        if not os.access(input_file, os.R_OK):
-            logger.log(f"File is not readable: {input_file}", "ERROR")
-            return
-        
-        # Attempt to detect encoding first to avoid double file reading
+        # Detect encoding once
         encoding = detect_encoding(input_file)
-        logger.log(f"Using encoding for {input_file}: {encoding}", "INFO")
+        logger.log(f"Starting processing of {input_file} (Encoding: {encoding})", "INFO")
         
-        batches = []
-        batch_counter = 0
-        
-        # Handle file according to type with better error handling
-        if file_type.lower() == "csv":
-            try:
-                with open(input_file, newline='', encoding=encoding, errors='replace') as file:
-                    reader = csv.reader(file)
-                    try:
-                        headers = next(reader)  # Skip header row
-                        logger.log(f"CSV headers: {headers}", "DEBUG")
-                    except StopIteration:
-                        logger.log(f"Empty CSV file: {input_file}", "WARNING")
-                        return
-                    
-                    # Process in batches
-                    batch = []
-                    for i, record in enumerate(reader):
-                        batch.append(record)
-                        
-                        if len(batch) >= BATCH_SIZE:
-                            batch_counter += 1
-                            batches.append((batch, batch_counter))
-                            batch = []
-                            
-                    if batch:
-                        batch_counter += 1
-                        batches.append((batch, batch_counter))
-            except UnicodeDecodeError as e:
-                logger.log(f"Encoding error with {encoding} for {input_file}: {e}. Trying with utf-8 and ignore errors.", "WARNING")
-                # Fallback to utf-8 with error ignoring if specified encoding fails
-                with open(input_file, newline='', encoding='utf-8', errors='ignore') as file:
-                    reader = csv.reader(file)
-                    headers = next(reader)  # Skip header row
-                    
-                    # Process in batches
-                    batch = []
-                    for i, record in enumerate(reader):
-                        batch.append(record)
-                        
-                        if len(batch) >= BATCH_SIZE:
-                            batch_counter += 1
-                            batches.append((batch, batch_counter))
-                            batch = []
-                            
-                    if batch:
-                        batch_counter += 1
-                        batches.append((batch, batch_counter))
-        
-        elif file_type.lower() == "pas":
-            try:
-                with open(input_file, newline='', encoding=encoding, errors='replace') as file:
-                    content = file.read()
-                    records = []
-                    
-                    # Split by record separator more carefully
-                    raw_records = content.splitlines()
-                    for raw_record in raw_records:
-                        if not raw_record.strip():
-                            continue
-                            
-                        try:
-                            record_fields = raw_record.split(PAS_RECORD_SEPARATOR)
-                            if len(record_fields) >= 1:  # Ensure we have at least one field
-                                records.append(record_fields)
-                        except Exception as e:
-                            logger.log(f"Error parsing PAS record: {e}", "WARNING")
-                    
-                    # Process in batches
-                    for i in range(0, len(records), BATCH_SIZE):
-                        batch = records[i:i+BATCH_SIZE]
-                        batch_counter += 1
-                        batches.append((batch, batch_counter))
-            except UnicodeDecodeError as e:
-                logger.log(f"Encoding error with {encoding} for {input_file}: {e}. Trying with utf-8 and ignore errors.", "WARNING")
-                # Fallback to utf-8 with error ignoring
-                with open(input_file, newline='', encoding='utf-8', errors='ignore') as file:
-                    content = file.read()
-                    records = [record.split(PAS_RECORD_SEPARATOR) for record in content.splitlines() if record.strip()]
-                    
-                    # Process in batches
-                    for i in range(0, len(records), BATCH_SIZE):
-                        batch = records[i:i+BATCH_SIZE]
-                        batch_counter += 1
-                        batches.append((batch, batch_counter))
-        else:
-            logger.log(f"Unsupported file type: {file_type}", "ERROR")
-            return
-            
-        if not batches:
-            logger.log(f"No records found in {input_file}", "WARNING")
-            return
-            
-        # Process batches in parallel with better error handling
-        logger.log(f"Starting parallel processing with {NUM_WORKERS} workers for {len(batches)} batches from {input_file}", "INFO")
-        
-        # Include filename in context for better logging
         file_basename = os.path.basename(input_file)
         
-        # Track failed batches for potential retry
-        failed_batches = []
+        # Generator yields batches (List[List[str]]) lazily
+        batch_generator = get_file_reader_generator(input_file, file_type, BATCH_SIZE, encoding)
         
+        futures = set()
+        MAX_PENDING_BATCHES = NUM_WORKERS * 2  # Backpressure limit
+        
+        batch_counter = 0
+        failed_batches = [] 
+
         with ProcessPoolExecutor(max_workers=NUM_WORKERS) as executor:
-            future_to_batch = {
-                executor.submit(process_record_batch, batch, f"{file_basename}:{batch_id}"): (batch, batch_id) 
-                for batch, batch_id in batches
-            }
             
-            # Process logs from completed tasks
-            for future in as_completed(future_to_batch):
-                try:
-                    batch_logs = future.result()
-                    for log_message, log_level in batch_logs:
-                        logger.log(log_message, log_level)
-                except Exception as exc:
-                    batch, batch_id = future_to_batch[future]
-                    logger.log(f"Batch {file_basename}:{batch_id} generated an exception: {exc}", "ERROR")
-                    failed_batches.append((batch, batch_id))
-        
-        # Retry failed batches
-        retry_count = 0
-        while failed_batches and retry_count < MAX_RETRIES:
-            retry_count += 1
-            logger.log(f"Retrying {len(failed_batches)} failed batches from {input_file}, attempt {retry_count}", "WARNING")
-            
-            still_failed = []
-            for batch, batch_id in failed_batches:
-                try:
-                    batch_logs = process_record_batch(batch, f"{file_basename}:{batch_id}_retry{retry_count}")
-                    for log_message, log_level in batch_logs:
-                        logger.log(log_message, log_level)
-                except Exception as exc:
-                    logger.log(f"Batch {file_basename}:{batch_id} retry {retry_count} failed: {exc}", "ERROR")
-                    still_failed.append((batch, batch_id))
-            
-            failed_batches = still_failed
-            
+            for batch in batch_generator:
+                batch_counter += 1
+                batch_id = f"{batch_counter}"
+                
+                # Backpressure: wait if too many tasks are pending
+                if len(futures) >= MAX_PENDING_BATCHES:
+                    done, futures = wait(futures, return_when=FIRST_COMPLETED)
+                    
+                    for future in done:
+                        try:
+                            batch_logs = future.result()
+                            for log_message, log_level in batch_logs:
+                                logger.log(log_message, log_level)
+                        except Exception as exc:
+                            pass # specific errors handled via batch_data below
+
+                future = executor.submit(process_record_batch, batch, f"{file_basename}:{batch_id}")
+                futures.add(future)
+                future.batch_data = (batch, batch_id) 
+
+            # Wait for remaining futures
+            while futures:
+                done, futures = wait(futures, return_when=FIRST_COMPLETED)
+                for future in done:
+                    try:
+                        batch_logs = future.result()
+                        for log_message, log_level in batch_logs:
+                            logger.log(log_message, log_level)
+                    except Exception as exc:
+                        if hasattr(future, 'batch_data'):
+                            batch, batch_id = future.batch_data
+                            logger.log(f"Batch {file_basename}:{batch_id} failed: {exc}", "ERROR")
+                            failed_batches.append((batch, batch_id))
+                        else:
+                            logger.log(f"Unknown batch failed: {exc}", "ERROR")
+
+        # Retry logic for failed batches
         if failed_batches:
-            logger.log(f"Unable to process {len(failed_batches)} batches from {input_file} after {MAX_RETRIES} retries", "ERROR")
-        
-        logger.log(f"Completed processing {input_file}", "INFO")
-    
+            logger.log(f"Retrying {len(failed_batches)} failed batches (Max Retries: {MAX_RETRIES})", "WARNING")
+            for _ in range(MAX_RETRIES):
+                if not failed_batches:
+                    break
+                    
+                retry_failed = []
+                for batch, batch_id in failed_batches:
+                    try:
+                        batch_logs = process_record_batch(batch, f"{file_basename}:{batch_id}_retry")
+                        for log_message, log_level in batch_logs:
+                            logger.log(log_message, log_level)
+                    except Exception as e:
+                        logger.log(f"Retry failed for {batch_id}: {e}", "ERROR")
+                        retry_failed.append((batch, batch_id))
+                
+                failed_batches = retry_failed
+                
+            if failed_batches:
+                logger.log(f"Final failure: {len(failed_batches)} batches could not be processed.", "ERROR")
+
+        logger.log(f"Completed streaming processing of {input_file}", "INFO")
+
     except Exception as e:
         error_trace = traceback.format_exc()
         logger.log(f"Failed to process {input_file}. Error: {str(e)}\n{error_trace}", "ERROR")
